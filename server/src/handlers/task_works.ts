@@ -1,86 +1,217 @@
+import { db } from '../db';
+import { tasksTable, taskWorksTable, usersTable } from '../db/schema';
 import { type TaskWork, type CreateTaskWorkInput, type VerifyTaskWorkInput } from '../schema';
+import { eq, and, isNull } from 'drizzle-orm';
 
 export async function createTaskWork(input: CreateTaskWorkInput, workerId: number): Promise<TaskWork> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to record that a user has completed a task,
-    // validate they haven't already worked on this task, and create a work record.
-    return Promise.resolve({
-        id: 1,
+  try {
+    // First, verify the task exists and is active
+    const task = await db.select()
+      .from(tasksTable)
+      .where(eq(tasksTable.id, input.task_id))
+      .execute();
+
+    if (task.length === 0) {
+      throw new Error('Task not found');
+    }
+
+    const taskData = task[0];
+
+    if (taskData.status !== 'active') {
+      throw new Error('Task is not active');
+    }
+
+    // Check if task has reached target interactions
+    if (taskData.completed_interactions >= taskData.target_interactions) {
+      throw new Error('Task has already reached target interactions');
+    }
+
+    // Verify the worker exists
+    const worker = await db.select()
+      .from(usersTable)
+      .where(eq(usersTable.id, workerId))
+      .execute();
+
+    if (worker.length === 0) {
+      throw new Error('Worker not found');
+    }
+
+    // Check if worker has already worked on this task
+    const existingWork = await db.select()
+      .from(taskWorksTable)
+      .where(and(
+        eq(taskWorksTable.task_id, input.task_id),
+        eq(taskWorksTable.worker_id, workerId)
+      ))
+      .execute();
+
+    if (existingWork.length > 0) {
+      throw new Error('Worker has already completed this task');
+    }
+
+    // Prevent task creator from working on their own task
+    if (taskData.creator_id === workerId) {
+      throw new Error('Task creator cannot work on their own task');
+    }
+
+    // Create the task work record
+    const result = await db.insert(taskWorksTable)
+      .values({
         task_id: input.task_id,
         worker_id: workerId,
-        coins_earned: 1, // This should come from the task
-        completed_at: new Date(),
-        verified_at: null,
-        verification_method: null,
-        proof_screenshot: input.proof_screenshot || null,
-        admin_notes: null
-    });
+        coins_earned: taskData.coins_per_interaction,
+        proof_screenshot: input.proof_screenshot ?? null
+      })
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('Task work creation failed:', error);
+    throw error;
+  }
 }
 
 export async function getTaskWorksByUser(userId: number): Promise<TaskWork[]> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to fetch all task works completed by a specific user.
-    return [];
+  try {
+    const results = await db.select()
+      .from(taskWorksTable)
+      .where(eq(taskWorksTable.worker_id, userId))
+      .execute();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get task works by user:', error);
+    throw error;
+  }
 }
 
 export async function getTaskWorksByTask(taskId: number): Promise<TaskWork[]> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to fetch all work submissions for a specific task.
-    return [];
+  try {
+    const results = await db.select()
+      .from(taskWorksTable)
+      .where(eq(taskWorksTable.task_id, taskId))
+      .execute();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get task works by task:', error);
+    throw error;
+  }
 }
 
 export async function getPendingTaskWorks(): Promise<TaskWork[]> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to fetch all task works that need verification (admin panel).
-    return [];
+  try {
+    const results = await db.select()
+      .from(taskWorksTable)
+      .where(isNull(taskWorksTable.verified_at))
+      .execute();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get pending task works:', error);
+    throw error;
+  }
 }
 
 export async function verifyTaskWork(input: VerifyTaskWorkInput): Promise<TaskWork> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to verify a task work submission,
-    // add coins to worker's balance, and mark as verified.
-    return Promise.resolve({
-        id: input.id,
-        task_id: 1,
-        worker_id: 1,
-        coins_earned: 1,
-        completed_at: new Date(),
+  try {
+    // Verify the task work exists
+    const existingWork = await db.select()
+      .from(taskWorksTable)
+      .where(eq(taskWorksTable.id, input.id))
+      .execute();
+
+    if (existingWork.length === 0) {
+      throw new Error('Task work not found');
+    }
+
+    if (existingWork[0].verified_at !== null) {
+      throw new Error('Task work has already been verified');
+    }
+
+    // Update the task work with verification details
+    const result = await db.update(taskWorksTable)
+      .set({
         verified_at: new Date(),
         verification_method: input.verification_method,
-        proof_screenshot: null,
         admin_notes: input.admin_notes || null
-    });
+      })
+      .where(eq(taskWorksTable.id, input.id))
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('Task work verification failed:', error);
+    throw error;
+  }
 }
 
 export async function rejectTaskWork(taskWorkId: number, reason: string): Promise<TaskWork> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to reject a task work submission with a reason.
-    return Promise.resolve({
-        id: taskWorkId,
-        task_id: 1,
-        worker_id: 1,
-        coins_earned: 0,
-        completed_at: new Date(),
-        verified_at: null,
+  try {
+    // Verify the task work exists
+    const existingWork = await db.select()
+      .from(taskWorksTable)
+      .where(eq(taskWorksTable.id, taskWorkId))
+      .execute();
+
+    if (existingWork.length === 0) {
+      throw new Error('Task work not found');
+    }
+
+    if (existingWork[0].verified_at !== null) {
+      throw new Error('Task work has already been processed');
+    }
+
+    // Update with rejection details (no verified_at means rejected)
+    const result = await db.update(taskWorksTable)
+      .set({
         verification_method: 'manual_rejection',
-        proof_screenshot: null,
-        admin_notes: reason
-    });
+        admin_notes: reason,
+        coins_earned: 0 // No coins earned for rejected work
+      })
+      .where(eq(taskWorksTable.id, taskWorkId))
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('Task work rejection failed:', error);
+    throw error;
+  }
 }
 
 export async function autoVerifyTaskWork(taskWorkId: number): Promise<TaskWork> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to automatically verify task work using social media APIs,
-    // check if the interaction was actually performed, and update accordingly.
-    return Promise.resolve({
-        id: taskWorkId,
-        task_id: 1,
-        worker_id: 1,
-        coins_earned: 1,
-        completed_at: new Date(),
+  try {
+    // Verify the task work exists
+    const existingWork = await db.select()
+      .from(taskWorksTable)
+      .where(eq(taskWorksTable.id, taskWorkId))
+      .execute();
+
+    if (existingWork.length === 0) {
+      throw new Error('Task work not found');
+    }
+
+    if (existingWork[0].verified_at !== null) {
+      throw new Error('Task work has already been verified');
+    }
+
+    // Update with automatic verification
+    const result = await db.update(taskWorksTable)
+      .set({
         verified_at: new Date(),
         verification_method: 'api_automatic',
-        proof_screenshot: null,
         admin_notes: 'Automatically verified via API'
-    });
+      })
+      .where(eq(taskWorksTable.id, taskWorkId))
+      .returning()
+      .execute();
+
+    return result[0];
+  } catch (error) {
+    console.error('Automatic task work verification failed:', error);
+    throw error;
+  }
 }

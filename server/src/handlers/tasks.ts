@@ -1,27 +1,56 @@
+import { db } from '../db';
+import { tasksTable, usersTable } from '../db/schema';
+import { eq } from 'drizzle-orm';
 import { type Task, type CreateTaskInput, type UpdateTaskInput, type PlatformType, type InteractionType } from '../schema';
 
 export async function createTask(input: CreateTaskInput, creatorId: number): Promise<Task> {
-    // This is a placeholder declaration! Real code should be implemented here.
-    // The goal of this handler is to create a new task, deduct coins from creator's balance,
-    // validate the target URL format, and store the task in the database.
-    const totalCost = input.target_interactions * input.coins_per_interaction;
-    
-    return Promise.resolve({
-        id: 1,
-        creator_id: creatorId,
-        platform: input.platform,
-        interaction_type: input.interaction_type,
-        target_url: input.target_url,
-        target_interactions: input.target_interactions,
-        completed_interactions: 0,
-        coins_per_interaction: input.coins_per_interaction,
-        total_coins_allocated: totalCost,
-        status: 'active',
-        requires_verification: true,
-        created_at: new Date(),
-        updated_at: new Date(),
-        completed_at: null
-    });
+    try {
+        // Calculate total cost
+        const totalCost = input.target_interactions * input.coins_per_interaction;
+
+        // Check if creator exists and has sufficient balance
+        const creator = await db.select()
+            .from(usersTable)
+            .where(eq(usersTable.id, creatorId))
+            .execute();
+
+        if (creator.length === 0) {
+            throw new Error('Creator not found');
+        }
+
+        if (creator[0].coin_balance < totalCost) {
+            throw new Error('Insufficient coin balance');
+        }
+
+        // Create task and deduct coins in a transaction-like manner
+        // First, deduct coins from creator's balance
+        await db.update(usersTable)
+            .set({ 
+                coin_balance: creator[0].coin_balance - totalCost,
+                updated_at: new Date()
+            })
+            .where(eq(usersTable.id, creatorId))
+            .execute();
+
+        // Then create the task
+        const result = await db.insert(tasksTable)
+            .values({
+                creator_id: creatorId,
+                platform: input.platform,
+                interaction_type: input.interaction_type,
+                target_url: input.target_url,
+                target_interactions: input.target_interactions,
+                coins_per_interaction: input.coins_per_interaction,
+                total_coins_allocated: totalCost
+            })
+            .returning()
+            .execute();
+
+        return result[0];
+    } catch (error) {
+        console.error('Task creation failed:', error);
+        throw error;
+    }
 }
 
 export async function getTasks(filters?: {
